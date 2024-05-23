@@ -117,5 +117,8 @@ spec:
   workspaces:
   - name: shared-data
   - name: huggingface-cache
+    optional: true
   - name: huggingface-token
+    optional: true
   - name: ilab-bucket
+    optional: true
