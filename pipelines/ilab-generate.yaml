@@ -7,10 +7,11 @@ spec:
   - name: num-instructions
     type: string
     description: Number of synthetic instructions to generate
-    default: "100"
+    default: "20"
   - name: taxonomy-repo
     type: string
     description: Git repository where the taxonomy is stored
+    default: "https://github.com/bbrowning/konflux-taxonomy.git"
   - name: taxonomy-revision
     type: string
     description: The Git ref to use when cloning the taxonomy repo
