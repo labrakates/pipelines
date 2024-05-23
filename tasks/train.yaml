@@ -1,0 +1,54 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ilab-train
+spec:
+  description: This Task is used to train the new ilab model from generated data
+  steps:
+  - name: train
+    image: quay.io/bbrowning/ilab-cli:0.14.1-10
+    script: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      mkdir -p models
+      export HF_TOKEN=foo
+      if [ "$(workspaces.huggingface-cache.bound)" = "true" ]; then
+        echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
+        export HF_HOME="$(workspaces.huggingface-cache.path)"
+
+        # Looks like ilab no longer respects $HF_HOME...
+        if [ ! -f "${HF_HOME}/merlinite-7b-lab-Q4_K_M.gguf" ]; then
+          ilab download --model-dir "${HF_HOME}"
+        fi
+        ln -sf "${HF_HOME}/merlinite-7b-lab-Q4_K_M.gguf" models/merlinite-7b-lab-Q4_K_M.gguf
+
+        if [ ! -d "${HF_HOME}/ibm/granite-7b-base" ]; then
+          ilab download --model-dir "${HF_HOME}" --repository ibm/granite-7b-base
+        fi
+        if [ ! -d "${HF_HOME}/ibm/merlinite-7b" ]; then
+          ilab download --model-dir "${HF_HOME}" --repository ibm/merlinite-7b
+        fi
+        ln -sf "${HF_HOME}/ibm" models/ibm
+      fi
+
+      pwd
+      ls -al
+      source /instruct-lab/instructlab/venv/bin/activate
+      rm -f training_results/*
+
+      nvidia-smi
+
+      ilab train --device cuda --num-epochs $(params.num-epochs)
+      ls -al
+    workingDir: $(workspaces.workspace.path)
+  params:
+  - name: num-epochs
+    description: Number of epochs during training
+    type: string
+  workspaces:
+  - name: workspace
+    description: The workspace with the generated data
+  - name: huggingface-cache
+    description: Location to cache artifacts from HuggingFace (see https://huggingface.co/docs/datasets/en/cache)

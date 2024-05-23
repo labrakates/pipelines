@@ -1,0 +1,57 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: pull-from-s3
+spec:
+  description: |
+    This Task is used to pull generated data and training results from
+    S3-compatible object storage (AWS S3, Minio, etc)
+  steps:
+  - name: pull
+    image: quay.io/minio/mc:latest
+    script: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      BUCKET_HOST="$(cat $(workspaces.bucket-config.path)/host)"
+      # Workaround bug in BUCKET_HOST param with ObjectBucketClaim
+      if [ "$BUCKET_HOST" == "s3-us-east-1.amazonaws.com" ]; then
+        BUCKET_HOST="s3.us-east-1.amazonaws.com"
+      fi
+
+      BUCKET="$(cat $(workspaces.bucket-config.path)/bucket)"
+
+      mc alias set s3 https://${BUCKET_HOST} \
+        "$(cat $(workspaces.bucket-config.path)/access_key)" \
+        "$(cat $(workspaces.bucket-config.path)/secret_access_key)"
+
+      set -x
+
+      S3_DIR="$(params.s3-dir)"
+      LOCAL_DIR="$(params.local-dir)"
+      mc cp --recursive "s3/${BUCKET}/${S3_DIR}/" "${LOCAL_DIR}/"
+
+    workingDir: $(workspaces.taxonomy.path)
+  params:
+  - name: s3-dir
+    description: S3 directory whose contents will be copied locally
+    type: string
+  - name: local-dir
+    description: Local directory that will receive the contents of the remote directory
+  workspaces:
+  - name: taxonomy
+    description: The workspace for the downloaded taxonomy
+  - name: bucket-config
+    description: |
+      A Workspace containing configuration for your S3-compatible object
+      storage bucket. This should contain three files:
+      - `host` - contains your S3-compatible endpoint host
+      - `bucket` - the name of the bucket to use
+      - `access_key` - contains your access key
+      - `secret_access_key` - contains your secret access key
+
+      This workspace can be a directly mounted Kubernetes Secret or even a
+      projected VolumeSource
+      (https://tekton.dev/docs/pipelines/workspaces/#projected) composed of
+      secrets and configmaps to map items to their expected path.

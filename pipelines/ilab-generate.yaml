@@ -1,0 +1,120 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ilab-generate
+spec:
+  params:
+  - name: num-instructions
+    type: string
+    description: Number of synthetic instructions to generate
+    default: "100"
+  - name: taxonomy-repo
+    type: string
+    description: Git repository where the taxonomy is stored
+  - name: taxonomy-revision
+    type: string
+    description: The Git ref to use when cloning the taxonomy repo
+    default: main
+  - name: taxonomy-ssl-verify
+    type: string
+    description: Whether to verify the SSL certificate of the taxonomy repo
+    default: "true"
+  - name: teacher-model
+    type: string
+    description: HuggingFace repository of teacher model to use
+    default: "ibm/merlinite-7b"
+  - name: teacher-model-chat-template
+    type: string
+    description: Override the default chat template for the teacher model
+    default: ""
+  - name: teacher-model-family
+    type: string
+    description: The family of the teacher model, as defined by InstructLab (merlinite or mixtral)
+    default: merlinite
+  - name: teacher-model-context-size
+    type: string
+    description: The context size (or context window) of the teacher model, in tokens.
+    default: "4096"
+  results:
+  - name: git-taxonomy-fetched-commit
+    description: The commit hash of the git repo where the taxonomy files were fetched from
+    value: $(tasks.fetch-taxonomy-git.results.commit)
+  - name: git-taxonomy-fetched-url
+    description: The url of the git repo where the taxonomy files were fetched from
+    value: $(tasks.fetch-taxonomy-git.results.url)
+  - name: git-taxonomy-fetched-commit-epoch
+    description: The commit timestamp of the git repo where the taxonomy files were fetched from
+    value: $(tasks.fetch-taxonomy-git.results.committer-date)
+  - name: generate-results-bucket-host
+    description: The S3 bucket host containing the generated data
+    value: $(tasks.save-to-s3.results.bucket-host)
+  - name: generate-results-bucket-name
+    description: The S3 bucket name containing the generated data
+    value: $(tasks.save-to-s3.results.bucket-name)
+  - name: generate-results-bucket-dir
+    description: The directory in the S3 bucket containing the generated data
+    value: $(tasks.save-to-s3.results.dir)
+  tasks:
+  - name: fetch-taxonomy-git
+    taskRef:
+      kind: ClusterTask
+      name: git-clone
+    params:
+    - name: url
+      value: "$(params.taxonomy-repo)"
+    - name: revision
+      value: "$(params.taxonomy-revision)"
+    - name: sslVerify
+      value: "$(params.taxonomy-ssl-verify)"
+    workspaces:
+    - name: output
+      workspace: shared-data
+
+  - name: ilab-generate
+    taskRef:
+      kind: Task
+      name: ilab-generate
+    runAfter:
+      - fetch-taxonomy-git
+    params:
+    - name: num-instructions
+      value: "$(params.num-instructions)"
+    - name: teacher-model
+      value: "$(params.teacher-model)"
+    - name: teacher-model-chat-template
+      value: "$(params.teacher-model-chat-template)"
+    - name: teacher-model-family
+      value: "$(params.teacher-model-family)"
+    - name: teacher-model-context-size
+      value: "$(params.teacher-model-context-size)"
+    timeout: 8h
+    workspaces:
+    - name: taxonomy
+      workspace: shared-data
+    - name: huggingface-cache
+      workspace: huggingface-cache
+    - name: huggingface-token
+      workspace: huggingface-token
+
+  - name: save-to-s3
+    taskRef:
+      kind: Task
+      name: save-to-s3
+    runAfter:
+    - ilab-generate
+    params:
+    - name: artifact-type
+      value: generate
+    - name: prune-older-than
+      value: 120d
+    workspaces:
+    - name: taxonomy
+      workspace: shared-data
+    - name: bucket-config
+      workspace: ilab-bucket
+
+  workspaces:
+  - name: shared-data
+  - name: huggingface-cache
+  - name: huggingface-token
+  - name: ilab-bucket

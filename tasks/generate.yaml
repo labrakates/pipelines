@@ -1,0 +1,151 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ilab-generate
+spec:
+  description: This Task is used to generate synthetic training data with ilab.
+  steps:
+  - name: generate
+    image: quay.io/bbrowning/ilab-cli:0.14.1-10
+    script: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      rm -f config.yaml
+      rm -f generated/*
+
+      ilab init --non-interactive --taxonomy-path .
+
+      if [ "$(workspaces.huggingface-token.bound)" = "true" ]; then
+        export HF_TOKEN="$(cat $(workspaces.huggingface-token.path)/hf_token)"
+      fi
+
+      TEACHER_MODEL="$(params.teacher-model)"
+      TEACHER_GROUP="$(dirname $(params.teacher-model))"
+      TEACHER_MODEL_FAMILY="$(params.teacher-model-family)"
+      TEACHER_MODEL_CTX_SIZE="$(params.teacher-model-context-size)"
+
+      mkdir -p models
+      if [ "$(workspaces.huggingface-cache.bound)" = "true" ]; then
+        echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
+        export HF_HOME="$(workspaces.huggingface-cache.path)"
+
+        if [ ! -d "${HF_HOME}/${TEACHER_GROUP}" ] || [ ! -d "${HF_HOME}/${TEACHER_MODEL}" ]; then
+          ilab download --model-dir "${HF_HOME}" --repository "${TEACHER_MODEL}"
+        fi
+        ln -sf "${HF_HOME}/${TEACHER_GROUP}" "models/${TEACHER_GROUP}"
+      fi
+
+      pwd
+      ls -al
+
+      echo "Waiting for vLLM sidecar to come up..."
+      for in in {1..180}; do curl -s http://localhost:8000/v1/models && break || sleep 5; done
+
+      set -x
+
+      MODEL_DIR="$(workspaces.taxonomy.path)/models/${TEACHER_MODEL}"
+
+      CHUNK_WORD_COUNT=""
+      if [ "$TEACHER_MODEL_CTX_SIZE" -ge 8096 ]; then
+        # divide model context size by 1.5 to get a safe estimate of chunk word
+        # count in larger models
+        CHUNK_WORD_COUNT="--chunk-word-count $(($TEACHER_MODEL_CTX_SIZE * 10 / 15))"
+      fi
+
+      ilab generate \
+        --endpoint-url http://localhost:8000/v1 \
+        --model "${MODEL_DIR}" \
+        --model-family "${TEACHER_MODEL_FAMILY}" \
+        --server-ctx-size "${TEACHER_MODEL_CTX_SIZE}" \
+        $CHUNK_WORD_COUNT \
+        --taxonomy-path qna.yaml \
+        --num-instructions $(params.num-instructions)
+
+      ls -al
+    workingDir: $(workspaces.taxonomy.path)
+  sidecars:
+  - name: vllm
+    image: quay.io/rh-aiservices-bu/vllm-openai-ubi9:0.4.2
+    script: |
+      #!/usr/bin/env bash
+
+      nvidia-smi
+
+      NUM_GPUS="$(nvidia-smi -L | grep GPU | wc -l)"
+      if [ $NUM_GPUS -lt 1 ]; then
+        echo "No GPUs are visible to this container - exiting"
+        exit 1
+      fi
+      echo "Using ${NUM_GPUS} GPUs for vLLM's tensor-parallel-size"
+
+      TEACHER_MODEL="$(params.teacher-model)"
+      MODEL_DIR="$(workspaces.taxonomy.path)/models/${TEACHER_MODEL}"
+      while [ ! -d "${MODEL_DIR}" ]; do
+        echo "Waiting for model to be downloaded..."
+        sleep 2
+      done
+
+
+      set -x
+
+      CHAT_TEMPLATE=""
+      if [ "$(params.teacher-model-chat-template)" != "" ]; then
+        cat <<EOF > /tmp/chat_template.jinja
+      $(params.teacher-model-chat-template)
+      EOF
+        CHAT_TEMPLATE="--chat-template /tmp/chat_template.jinja"
+        echo "Chat template set to ${CHAT_TEMPLATE}"
+        cat /tmp/chat_template.jinja
+      fi
+
+      python3 -m vllm.entrypoints.openai.api_server \
+      --model "${MODEL_DIR}" \
+      ${CHAT_TEMPLATE} \
+      --gpu-memory-utilization 0.95 \
+      --tensor-parallel-size ${NUM_GPUS}
+
+    volumeMounts:
+      - name: shm
+        mountPath: /dev/shm
+      - name: $(workspaces.taxonomy.volume)
+        mountPath: $(workspaces.taxonomy.path)
+    ports:
+      - name: http
+        containerPort: 8000
+        protocol: TCP
+  params:
+  - name: num-instructions
+    description: Number of instructions to generate
+    type: string
+  - name: teacher-model
+    description: HuggingFace repository of teacher model to use
+    type: string
+  - name: teacher-model-chat-template
+    description: Override the default chat template for the teacher model
+    type: string
+    default: ""
+  - name: teacher-model-family
+    description: The family of the teacher model, as defined by InstructLab (merlinite or mixtral)
+    type: string
+    default: merlinite
+  - name: teacher-model-context-size
+    description: The context size (or context window) of the teacher model, in tokens.
+    type: string
+    default: "4096"
+  workspaces:
+  - name: taxonomy
+    description: The workspace for the downloaded taxonomy
+  - name: huggingface-cache
+    description: Location to cache artifacts from HuggingFace (see https://huggingface.co/docs/datasets/en/cache)
+    optional: true
+  - name: huggingface-token
+    description: |
+      A Workspace containing a single `hf_token` file that contains your
+      HuggingFace access token.
+
+      This workspace can be a directly mounted Kubernetes Secret or even a
+      projected VolumeSource
+      (https://tekton.dev/docs/pipelines/workspaces/#projected) composed of
+      secrets and configmaps to map items to their expected path.
+    optional: true

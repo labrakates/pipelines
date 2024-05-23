@@ -1,0 +1,140 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ilab-train-deepspeed
+spec:
+  description: This Task is used to train the new ilab model using deepspeed
+  steps:
+  - name: train
+    image: quay.io/bbrowning/ilab-deepspeed:1.0.8
+    script: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      nvidia-smi
+
+      HF_TOKEN=foo
+      STUDENT_MODEL="$(params.student-model)"
+      STUDENT_GROUP="$(dirname $(params.student-model))"
+
+      mkdir -p models
+      if [ "$(workspaces.huggingface-cache.bound)" = "true" ]; then
+        echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
+        export HF_HOME="$(workspaces.huggingface-cache.path)"
+
+        if [ ! -d "${HF_HOME}/${STUDENT_GROUP}" ] || [ ! -d "${HF_HOME}/${STUDENT_MODEL}" ]; then
+          ilab download --model-dir "${HF_HOME}" --repository "${STUDENT_MODEL}"
+        fi
+        ln -sf "${HF_HOME}/${STUDENT_GROUP}" "models/${STUDENT_GROUP}"
+      fi
+
+      pwd
+      ls -al
+      set -x
+
+      NUM_GPUS="$(nvidia-smi -L | grep GPU | wc -l)"
+      if [ $NUM_GPUS -lt 1 ]; then
+        echo "No GPUs are visible to this container - exiting"
+        exit 1
+      fi
+      echo "Using ${NUM_GPUS} GPUs for training"
+
+      NPROC_PER_NODE="${NUM_GPUS}"
+      EFFECTIVE_BATCH_SIZE="12"
+      TRAIN_DEVICE="cuda"
+      NUM_EPOCHS="$(params.num-epochs)"
+      SDG_OUTPUT_PATH="$(pwd)"
+      LORA_RANK="$(params.lora-rank)"
+
+      TESTING_DATA_PATH="generated"
+      TRAINING_DATA_PATH="generated"
+      DATASET_NAME="ilab-generated"
+      WORKDIR="$(pwd)"
+
+      SAMPLE_SIZE="$(wc -l < ${TRAINING_DATA_PATH}/train_*.jsonl)"
+      SAVE_SAMPLES=$(($SAMPLE_SIZE - 1))
+
+      # Convert ilab generate output to match SDG output format for train and test data
+      mkdir -p ${SDG_OUTPUT_PATH}/training
+      bash -c "python /training/ilab_to_sdg.py \"${TRAINING_DATA_PATH}\" train \"${DATASET_NAME}\"; mv sdg_out.jsonl training/train.jsonl"
+      bash -c "python /training/ilab_to_sdg.py \"${TESTING_DATA_PATH}\" test \"${DATASET_NAME}\"; mv sdg_out.jsonl training/test.jsonl"
+
+      # Add curated subset of taxonomy
+      # bash -c "cat /training/sample-data/train_all_pruned_SDG.jsonl >> training/train.jsonl"
+      bash -c "head -n 100 /training/sample-data/train_all_pruned_SDG.jsonl >> training/train.jsonl"
+
+      # Pre-process generated data before training
+      bash -c \
+      "python /training/data_process.py --logging_level INFO \
+      --data_path training/train.jsonl \
+      --data_output_path=training \
+      --max_seq_len 4096 \
+      --model_name_or_path models/${STUDENT_MODEL}"
+
+      mkdir -p training_output
+
+      # Clean up from any previous ilab train or deepspeed runs
+      rm -f training_output/*
+      rm -f training_results/*
+
+      # Run training
+      torchrun \
+      --nnodes 1 \
+      --node_rank 0 \
+      --nproc_per_node ${NPROC_PER_NODE} \
+      --rdzv_id 101 \
+      --rdzv_endpoint 0.0.0.0:8888 /training/main_ds.py \
+      --model_name_or_path models/${STUDENT_MODEL} \
+      --data_path training/data.jsonl \
+      --output_dir="training_output" \
+      --lora_rank=${LORA_RANK} \
+      --num_epochs=${NUM_EPOCHS} \
+      --effective_batch_size=${EFFECTIVE_BATCH_SIZE} \
+      --learning_rate=2e-5 \
+      --num_warmup_steps=385 \
+      --save_samples=${SAVE_SAMPLES} \
+      --log_level="INFO" \
+      --sharding_strategy='HYBRID_SHARD' \
+      --seed=19347 | tee training_output/0.log
+
+      echo
+      echo 
+
+      if [[ -d "${SDG_OUTPUT_PATH}/training_output/hf_format" ]]; then
+        month=$(date +'%m')
+        day=$(date +'%d')
+        hour=$(date +'%H')
+        min=$(date +'%M')
+
+        dest=${SDG_OUTPUT_PATH}/models/tuned-${month}${day}-${hour}${min}
+        mv training_output/hf_format "${dest}"
+        echo "Generated model in ${dest}:"
+        (cd ${dest}; find . -type d)
+        # list highest sample model
+        ls -1v ${dest}| grep samples | tail -n 1
+      else
+        echo "Warning: No results were written!"
+      fi
+
+      ls -al
+    volumeMounts:
+      - name: shm
+        mountPath: /dev/shm
+    workingDir: $(workspaces.workspace.path)
+  params:
+  - name: lora-rank
+    description: LoRA rank to use, 0 to disable LoRA
+    type: string
+  - name: num-epochs
+    description: Number of epochs during training
+    type: string
+  - name: student-model
+    description: HuggingFace repository of student model to use
+    type: string
+    default: ibm/merlinite-7b
+  workspaces:
+  - name: workspace
+    description: The workspace with the generated data
+  - name: huggingface-cache
+    description: Location to cache artifacts from HuggingFace (see https://huggingface.co/docs/datasets/en/cache)

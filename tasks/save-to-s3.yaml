@@ -1,0 +1,113 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: save-to-s3
+spec:
+  description: |
+    This Task is used to save generated data and training results to
+    S3-compatible object storage (AWS S3, Minio, etc)
+  steps:
+  - name: save
+    image: quay.io/minio/mc:latest
+    script: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      BUCKET_HOST="$(cat $(workspaces.bucket-config.path)/host)"
+      # Workaround bug in BUCKET_HOST param with ObjectBucketClaim
+      if [ "$BUCKET_HOST" == "s3-us-east-1.amazonaws.com" ]; then
+        BUCKET_HOST="s3.us-east-1.amazonaws.com"
+      fi
+
+      BUCKET="$(cat $(workspaces.bucket-config.path)/bucket)"
+
+      mc alias set s3 https://${BUCKET_HOST} \
+        "$(cat $(workspaces.bucket-config.path)/access_key)" \
+        "$(cat $(workspaces.bucket-config.path)/secret_access_key)"
+
+      set -x
+
+      echo "Contents of current directory:"
+      ls -al
+
+      ARTIFACT_TYPE="$(params.artifact-type)"
+      OLDER_THAN="$(params.prune-older-than)"
+
+      if [ "$ARTIFACT_TYPE" != "generate" ] && [ "$ARTIFACT_TYPE" != "train" ]; then
+        echo "Valid artifact types are generate and train"
+        exit 1
+      fi
+
+      # Remove all older objects of this artifact type
+      mc rm --recursive --force s3/${BUCKET}/${ARTIFACT_TYPE}/ --older-than "$OLDER_THAN"
+
+      TODAY="$(date -u -Idate)"
+      FOLDER="${ARTIFACT_TYPE}/${TODAY}/$(context.taskRun.uid)"
+
+      if [ "$ARTIFACT_TYPE" == "generate" ]; then
+        if [ -d "generated" ]; then
+          mc cp --recursive generated/ s3/${BUCKET}/${FOLDER}/
+        fi
+      fi
+
+      if [ "$ARTIFACT_TYPE" == "train" ]; then
+        if [ -d "training_results/final" ]; then
+          mc cp --recursive training_results/final/ \
+            s3/${BUCKET}/${FOLDER}/training_results/final/
+        fi
+        if [ -d "models" ]; then
+          set +e
+          if [ $(ls models/ggml-*.gguf) ]; then
+            mc cp models/ggml-*.gguf s3/${BUCKET}/${FOLDER}/models/
+          fi
+          TUNED_DIR="$(ls -1dv models/tuned-* | tail -n 1)"
+          if [ "$TUNED_DIR" != "" ]; then
+            mc cp --recursive ${TUNED_DIR}/ s3/${BUCKET}/${FOLDER}/${TUNED_DIR}/
+          fi
+          set -e
+        fi
+      fi
+
+      printf "%s" "${BUCKET_HOST}" > "$(results.bucket-host.path)"
+      printf "%s" "${BUCKET}" > "$(results.bucket-name.path)"
+      printf "%s" "${FOLDER}" > "$(results.dir.path)"
+    workingDir: $(workspaces.taxonomy.path)
+  params:
+  - name: artifact-type
+    description: Artifact type to save - "generate" or "train"
+    type: string
+    default: "generate"
+  - name: prune-older-than
+    description: |
+      Remove artifacts of this type older than this - accepted values
+      are formats like "30d", "12h", "45m"
+    type: string
+    default: "30d"
+  results:
+  - name: bucket-host
+    description: |
+      The bucket host we used when copying results to S3
+  - name: bucket-name
+    description: |
+      The bucket name we used when copying results to S3
+  - name: dir
+    description: |
+      The unique directory within the bucket that contains the results of this
+      specific run.
+  workspaces:
+  - name: taxonomy
+    description: The workspace for the downloaded taxonomy
+  - name: bucket-config
+    description: |
+      A Workspace containing configuration for your S3-compatible object
+      storage bucket. This should contain three files:
+      - `host` - contains your S3-compatible endpoint host
+      - `bucket` - the name of the bucket to use
+      - `access_key` - contains your access key
+      - `secret_access_key` - contains your secret access key
+
+      This workspace can be a directly mounted Kubernetes Secret or even a
+      projected VolumeSource
+      (https://tekton.dev/docs/pipelines/workspaces/#projected) composed of
+      secrets and configmaps to map items to their expected path.
