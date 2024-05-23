@@ -111,3 +111,4 @@ spec:
       projected VolumeSource
       (https://tekton.dev/docs/pipelines/workspaces/#projected) composed of
       secrets and configmaps to map items to their expected path.
+    optional: true

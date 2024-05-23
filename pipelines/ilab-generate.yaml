@@ -108,6 +108,10 @@ spec:
       value: generate
     - name: prune-older-than
       value: 120d
+    when:
+    - input: "$(workspaces.ilab-bucket.bound)"
+      operator: in
+      values: ["false"]
     workspaces:
     - name: taxonomy
       workspace: shared-data
