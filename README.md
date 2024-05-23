@@ -10,6 +10,6 @@ The name is roughly inspired by the InstructLab labrador combined with
 the way some people pronounce the Kubernetes abbreviation "k8s" as
 "kates" / "keights".
 
-Please see [https://labrakates.github.io/]() for details on how to get
+Please see https://labrakates.github.io/ for details on how to get
 started with Labrakates, including installing the Pipelines in your
 own cluster as well as example usage.
