@@ -1,0 +1,41 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: ilab-generate-pipelinerun
+  generateName: ilab-generate-pipelinerun-
+spec:
+  pipelineRef:
+    name: ilab-generate
+  taskRunSpecs:
+  - pipelineTaskName: ilab-generate
+    sidecarSpecs:
+      - name: vllm
+        computeResources:
+          requests:
+            cpu: '2'
+            memory: 16Gi
+            nvidia.com/gpu: '1'
+          limits:
+            cpu: '4'
+            memory: 32Gi
+            nvidia.com/gpu: '1'
+    podTemplate:
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+  timeouts:
+    pipeline: 9h
+  workspaces:
+  - name: shared-data
+    volumeClaimTemplate:
+      metadata:
+        name: ilab-shared-data-pvc
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 5Gi
