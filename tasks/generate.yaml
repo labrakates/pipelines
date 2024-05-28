@@ -18,6 +18,8 @@ spec:
 
       if [ "$(workspaces.huggingface-token.bound)" = "true" ]; then
         export HF_TOKEN="$(cat $(workspaces.huggingface-token.path)/hf_token)"
+      else
+        export HF_TOKEN="__unset__"
       fi
 
       TEACHER_MODEL="$(params.teacher-model)"
@@ -26,15 +28,13 @@ spec:
       TEACHER_MODEL_CTX_SIZE="$(params.teacher-model-context-size)"
 
       mkdir -p models
-      if [ "$(workspaces.huggingface-cache.bound)" = "true" ]; then
-        echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
-        export HF_HOME="$(workspaces.huggingface-cache.path)"
+      echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
+      export HF_HOME="$(workspaces.huggingface-cache.path)"
 
-        if [ ! -d "${HF_HOME}/${TEACHER_GROUP}" ] || [ ! -d "${HF_HOME}/${TEACHER_MODEL}" ]; then
-          ilab download --model-dir "${HF_HOME}" --repository "${TEACHER_MODEL}"
-        fi
-        ln -sf "${HF_HOME}/${TEACHER_GROUP}" "models/${TEACHER_GROUP}"
+      if [ ! -d "${HF_HOME}/${TEACHER_GROUP}" ] || [ ! -d "${HF_HOME}/${TEACHER_MODEL}" ]; then
+        ilab download --model-dir "${HF_HOME}" --repository "${TEACHER_MODEL}"
       fi
+      ln -sf "${HF_HOME}/${TEACHER_GROUP}" "models/${TEACHER_GROUP}"
 
       pwd
       ls -al
@@ -51,6 +51,9 @@ spec:
         # divide model context size by 1.5 to get a safe estimate of chunk word
         # count in larger models
         CHUNK_WORD_COUNT="--chunk-word-count $(($TEACHER_MODEL_CTX_SIZE * 10 / 15))"
+      else
+        # For really small models, keep our chunks a fixed small size
+        CHUNK_WORD_COUNT="--chunk-word-count 512"
       fi
 
       ilab generate \
@@ -80,6 +83,8 @@ spec:
       echo "Using ${NUM_GPUS} GPUs for vLLM's tensor-parallel-size"
 
       TEACHER_MODEL="$(params.teacher-model)"
+      TEACHER_MODEL_CTX_SIZE="$(params.teacher-model-context-size)"
+
       MODEL_DIR="$(workspaces.taxonomy.path)/models/${TEACHER_MODEL}"
       while [ ! -d "${MODEL_DIR}" ]; do
         echo "Waiting for model to be downloaded..."
@@ -102,7 +107,8 @@ spec:
       python3 -m vllm.entrypoints.openai.api_server \
       --model "${MODEL_DIR}" \
       ${CHAT_TEMPLATE} \
-      --gpu-memory-utilization 0.95 \
+      --gpu-memory-utilization 0.99 \
+      --enforce-eager \
       --tensor-parallel-size ${NUM_GPUS}
 
     volumeMounts:
@@ -124,21 +130,17 @@ spec:
   - name: teacher-model-chat-template
     description: Override the default chat template for the teacher model
     type: string
-    default: ""
   - name: teacher-model-family
     description: The family of the teacher model, as defined by InstructLab (merlinite or mixtral)
     type: string
-    default: merlinite
   - name: teacher-model-context-size
     description: The context size (or context window) of the teacher model, in tokens.
     type: string
-    default: "4096"
   workspaces:
   - name: taxonomy
     description: The workspace for the downloaded taxonomy
   - name: huggingface-cache
     description: Location to cache artifacts from HuggingFace (see https://huggingface.co/docs/datasets/en/cache)
-    optional: true
   - name: huggingface-token
     description: |
       A Workspace containing a single `hf_token` file that contains your

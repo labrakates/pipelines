@@ -110,7 +110,7 @@ spec:
       value: 120d
     when:
     - input: "$(workspaces.ilab-bucket.bound)"
-      operator: in
+      operator: notin
       values: ["false"]
     workspaces:
     - name: taxonomy
@@ -121,7 +121,6 @@ spec:
   workspaces:
   - name: shared-data
   - name: huggingface-cache
-    optional: true
   - name: huggingface-token
     optional: true
   - name: ilab-bucket

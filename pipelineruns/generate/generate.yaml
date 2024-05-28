@@ -13,11 +13,11 @@ spec:
         computeResources:
           requests:
             cpu: '2'
-            memory: 16Gi
+            memory: 12Gi
             nvidia.com/gpu: '1'
           limits:
             cpu: '4'
-            memory: 32Gi
+            memory: 24Gi
             nvidia.com/gpu: '1'
     podTemplate:
       volumes:
@@ -28,6 +28,9 @@ spec:
   timeouts:
     pipeline: 9h
   workspaces:
+  - name: huggingface-cache
+    persistentVolumeClaim:
+      claimName: huggingface-cache-pvc
   - name: shared-data
     volumeClaimTemplate:
       metadata:
