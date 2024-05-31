@@ -29,8 +29,7 @@ spec:
     pipeline: 9h
   workspaces:
   - name: huggingface-cache
-    persistentVolumeClaim:
-      claimName: huggingface-cache-pvc
+    emptyDir: {}
   - name: shared-data
     volumeClaimTemplate:
       metadata:
