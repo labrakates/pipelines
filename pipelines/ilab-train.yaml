@@ -4,8 +4,22 @@ metadata:
   name: ilab-train
 spec:
   params:
+  - name: generate-results-repo
+    type: string
+    description: Git repository where the data generation results are stored
+    default: "https://github.com/bbrowning/konflux-taxonomy.git"
+  - name: generate-results-revision
+    type: string
+    description: The Git ref to use when cloning the data generation results repo
+    default: main
+  - name: generate-results-subdir
+    type: string
+    description: The subdirectory within the data generation results (cloned git repository or directory downloaded from S3) directory that contains the results
+    default: pre-generated
   - name: generate-results-bucket-dir
+    type: string
     description: The directory in the S3 bucket containing the generated data
+    default: ""
   - name: train-deepspeed
     type: string
     description: Whether to deploy with DeepSpeed training or not
@@ -33,6 +47,23 @@ spec:
     value: $(tasks.save-to-s3.results.dir)
   tasks:
 
+  - name: fetch-generation-results-git
+    taskRef:
+      kind: ClusterTask
+      name: git-clone
+    params:
+    - name: url
+      value: "$(params.generate-results-repo)"
+    - name: revision
+      value: "$(params.generate-results-revision)"
+    when:
+    - input: "$(workspaces.ilab-bucket.bound)"
+      operator: in
+      values: ["false"]
+    workspaces:
+    - name: output
+      workspace: shared-data
+
   - name: pull-from-s3
     taskRef:
       kind: Task
@@ -42,10 +73,13 @@ spec:
       value: "$(params.generate-results-bucket-dir)"
     - name: local-dir
       value: generated
+    when:
+    - input: "$(workspaces.ilab-bucket.bound)"
+      operator: notin
+      values: ["false"]
     workspaces:
     - name: taxonomy
       workspace: shared-data
-      subPath: instructlab-taxonomy
     - name: bucket-config
       workspace: ilab-bucket
 
@@ -55,6 +89,7 @@ spec:
       name: ilab-train
     retries: 2
     runAfter:
+      - fetch-generation-results-git
       - pull-from-s3
     params:
     - name: num-epochs
@@ -67,7 +102,6 @@ spec:
     workspaces:
     - name: workspace
       workspace: shared-data
-      subPath: instructlab-taxonomy
     - name: huggingface-cache
       workspace: huggingface-cache
 
@@ -77,8 +111,11 @@ spec:
       name: ilab-train-deepspeed
     retries: 2
     runAfter:
+      - fetch-generation-results-git
       - pull-from-s3
     params:
+    - name: generate-results-subdir
+      value: "$(params.generate-results-subdir)"
     - name: lora-rank
       value: "$(params.train-lora-rank)"
     - name: num-epochs
@@ -91,7 +128,6 @@ spec:
     workspaces:
     - name: workspace
       workspace: shared-data
-      subPath: instructlab-taxonomy
     - name: huggingface-cache
       workspace: huggingface-cache
 
@@ -107,10 +143,13 @@ spec:
       value: train
     - name: prune-older-than
       value: 30d
+    when:
+    - input: "$(workspaces.ilab-bucket.bound)"
+      operator: notin
+      values: ["false"]
     workspaces:
     - name: taxonomy
       workspace: shared-data
-      subPath: instructlab-taxonomy
     - name: bucket-config
       workspace: ilab-bucket
 
@@ -118,3 +157,4 @@ spec:
   - name: shared-data
   - name: huggingface-cache
   - name: ilab-bucket
+    optional: true

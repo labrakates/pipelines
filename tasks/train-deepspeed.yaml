@@ -19,15 +19,13 @@ spec:
       STUDENT_GROUP="$(dirname $(params.student-model))"
 
       mkdir -p models
-      if [ "$(workspaces.huggingface-cache.bound)" = "true" ]; then
-        echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
-        export HF_HOME="$(workspaces.huggingface-cache.path)"
+      echo "Setting HuggingFace cache to $(workspaces.huggingface-cache.path)"
+      export HF_HOME="$(workspaces.huggingface-cache.path)"
 
-        if [ ! -d "${HF_HOME}/${STUDENT_GROUP}" ] || [ ! -d "${HF_HOME}/${STUDENT_MODEL}" ]; then
-          ilab download --model-dir "${HF_HOME}" --repository "${STUDENT_MODEL}"
-        fi
-        ln -sf "${HF_HOME}/${STUDENT_GROUP}" "models/${STUDENT_GROUP}"
+      if [ ! -d "${HF_HOME}/${STUDENT_GROUP}" ] || [ ! -d "${HF_HOME}/${STUDENT_MODEL}" ]; then
+        ilab download --model-dir "${HF_HOME}" --repository "${STUDENT_MODEL}"
       fi
+      ln -sf "${HF_HOME}/${STUDENT_GROUP}" "models/${STUDENT_GROUP}"
 
       pwd
       ls -al
@@ -47,8 +45,8 @@ spec:
       SDG_OUTPUT_PATH="$(pwd)"
       LORA_RANK="$(params.lora-rank)"
 
-      TESTING_DATA_PATH="generated"
-      TRAINING_DATA_PATH="generated"
+      TESTING_DATA_PATH="$(params.generate-results-subdir)"
+      TRAINING_DATA_PATH="$(params.generate-results-subdir)"
       DATASET_NAME="ilab-generated"
       WORKDIR="$(pwd)"
 
@@ -123,6 +121,9 @@ spec:
         mountPath: /dev/shm
     workingDir: $(workspaces.workspace.path)
   params:
+  - name: generate-results-subdir
+    description: The subdirectory within the data generation results (cloned git repository or directory downloaded from S3) directory that contains the results
+    type: string
   - name: lora-rank
     description: LoRA rank to use, 0 to disable LoRA
     type: string

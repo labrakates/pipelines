@@ -1,0 +1,46 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: ilab-train-pipelinerun
+  generateName: ilab-train-pipelinerun-
+spec:
+  pipelineRef:
+    name: ilab-train
+  params:
+  - name: train-lora-rank
+    value: "64"
+  - name: train-num-epochs
+    value: "10"
+  taskRunSpecs:
+  - pipelineTaskName: ilab-train-deepspeed
+    computeResources:
+      requests:
+        cpu: '4'
+        memory: 48Gi
+        nvidia.com/gpu: '2'
+      limits:
+        cpu: '8'
+        memory: 96Gi
+        nvidia.com/gpu: '2'
+    podTemplate:
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+  timeouts:
+    pipeline: 9h
+  workspaces:
+  - name: huggingface-cache
+    emptyDir: {}
+  - name: shared-data
+    volumeClaimTemplate:
+      metadata:
+        name: ilab-shared-data-pvc
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 50Gi
